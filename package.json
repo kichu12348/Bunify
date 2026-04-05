@@ -1,6 +1,14 @@
 {
   "name": "@kichu12348/bunify",
-  "version": "1.0.0",
+  "version": "1.0.2",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/kichu12348/bunify.git"
+  },
+  "bugs": {
+    "url": "https://github.com/kichu12348/bunify/issues"
+  },
+  "homepage": "https://github.com/kichu12348/bunify#readme",
   "author": "Kichu",
   "publishConfig": {
     "access": "public"
