@@ -7,26 +7,6 @@ type RouteSchema = {
   Reply?: any;
 };
 
-export type BunifyRequest<T extends RouteSchema = RouteSchema, D = {}> = {
-  raw: Bun.BunRequest;
-  query: Record<string, string> & (T["Query"] extends object ? T["Query"] : {});
-  params: T["Params"] extends infer U
-    ? Record<string, string> & U
-    : Record<string, string>;
-  json: () => Promise<T["Body"]>;
-  text: () => Promise<string>;
-  headers: Headers;
-  method: string;
-  url: string;
-} & D;
-
-type Reply = ReturnType<typeof createReply>;
-
-export type BunifyReply<T extends RouteSchema = RouteSchema> = Reply & {
-  send: (content: T["Reply"] | Response) => Response;
-  json: (data: T["Reply"]) => Response;
-};
-
 export type Handler<T extends RouteSchema = RouteSchema, D = {}> = (
   request: BunifyRequest<T, D>,
   reply: BunifyReply<T>,
@@ -68,59 +48,124 @@ interface RegisterOptions {
   prefix?: string;
 }
 
+// Look at how lean this is! No closures, no heavy standard objects.
+export class BunifyReply<T extends RouteSchema = RouteSchema> {
+  private _status: number = 200;
+  private _headers: Record<string, string> = {}; // Fast, plain object
+  private _body: any = null;
+  public sent: boolean = false;
+
+  status(code: number) {
+    this._status = code;
+    return this;
+  }
+
+  code(code: number) {
+    return this.status(code);
+  }
+
+  headers(key: string, value: string) {
+    this._headers[key] = value;
+    return this;
+  }
+
+  json(data: T["Reply"]) {
+    return this.headers("Content-Type", "application/json").send(data);
+  }
+
+  redirect(url: string) {
+    return this.status(302).headers("Location", url).send(null);
+  }
+
+  html(content: string) {
+    return this.headers("Content-Type", "text/html").send(content);
+  }
+
+  send(content: T["Reply"] | Response | null) {
+    if (this.sent) {
+      throw new Error("Reply has already been sent.");
+    }
+    this.sent = true;
+
+    if (content instanceof Response) return content;
+
+    if (typeof content === "object" && content !== null) {
+      this._headers["Content-Type"] = "application/json";
+      content = JSON.stringify(content) as any;
+    }
+
+    this._body = content;
+    return this.build();
+  }
+
+  build() {
+    if (this._body instanceof Response) return this._body;
+    return new Response(this._body, {
+      status: this._status,
+      headers: this._headers,
+    });
+  }
+}
+
 function createReply() {
-  let status = 200;
-  const headers = new Headers();
-  let body: any = null;
-  let sent = false;
+  return new BunifyReply();
+}
 
-  return {
-    get sent() {
-      return sent;
-    },
+export class BunifyRequest<T extends RouteSchema = RouteSchema, D = {}> {
+  raw: Bun.BunRequest;
+  method: string;
+  url: string;
+  headers: Headers;
+  params: any;
 
-    status(code: number) {
-      status = code;
-      return this;
-    },
-    code(code: number) {
-      return this.status(code);
-    },
-    headers(key: string, value: string) {
-      headers.set(key, value);
-      return this;
-    },
-    json(data: any) {
-      return this.headers("Content-Type", "application/json").send(data);
-    },
-    redirect(url: string) {
-      return this.status(302).headers("Location", url).send(null);
-    },
-    html(content: string) {
-      return this.headers("Content-Type", "text/html").send(content);
-    },
-    send(content: any) {
-      if (sent) {
-        throw new Error("Reply has already been sent.");
+  private _queryString: string = "";
+  private _parsedQuery: any = null;
+
+  constructor(req: Bun.BunRequest, decorators: Record<string, any>) {
+    this.raw = req;
+    this.method = req.method;
+    this.url = req.url;
+    this.headers = req.headers;
+    this.params = (req as any).params || {};
+
+    // 2. Fast decorator assignment (Avoids the object spread penalty!)
+    const keys = Object.keys(decorators);
+    for (let i = 0; i < keys.length; i++) {
+      const key = keys[i];
+      if (key !== undefined) {
+        (this as any)[key] = decorators[key];
       }
-      sent = true;
-      if (content instanceof Response) return content;
+    }
+  }
 
-      if (typeof content === "object") {
-        headers.set("Content-Type", "application/json");
-        content = JSON.stringify(content);
-      }
+  // 3. Our Lazy Evaluated Getter
+  get query() {
+    if (this._parsedQuery !== null) return this._parsedQuery;
 
-      body = content;
-      return this.build();
-    },
+    const urlStr = this.raw.url;
+    const queryStart = urlStr.indexOf("?", 8);
+    if (queryStart !== -1) {
+      this._queryString = urlStr.substring(queryStart + 1);
+    }
 
-    build() {
-      if (body instanceof Response) return body;
+    if (!this._queryString) {
+      this._parsedQuery = {};
+      return this._parsedQuery;
+    }
 
-      return new Response(body, { status, headers });
-    },
-  };
+    this._parsedQuery = Object.fromEntries(
+      new URLSearchParams(this._queryString),
+    );
+    return this._parsedQuery;
+  }
+
+  json() {
+    return this.raw.json();
+  }
+
+  text() {
+    return this.raw.text();
+  }
 }
 
 export class Bunify<Decorators extends Record<string, any> = {}> {
@@ -156,22 +201,36 @@ export class Bunify<Decorators extends Record<string, any> = {}> {
       handler,
     );
     const wrappedHandler = async (req: Bun.BunRequest) => {
-      const url = new URL(req.url);
+      let parsedQuery: any = null;
+      // const request: BunifyRequest<T, Decorators> = {
+      //   raw: req,
+      //   // Lazily parse query parameters when accessed for the first time to optimize performance
+      //   get query() {
+      //     if (parsedQuery !== null) return parsedQuery;
 
-      const request: BunifyRequest<T, Decorators> = {
-        raw: req,
-        query: Object.fromEntries(url.searchParams.entries()) as BunifyRequest<
-          T,
-          Decorators
-        >["query"],
-        params: (req.params || {}) as BunifyRequest<T, Decorators>["params"],
-        json: () => req.json(),
-        text: () => req.text(),
-        headers: req.headers,
-        method: req.method,
-        url: req.url,
-        ...(this.decorators as Decorators),
-      };
+      //     const urlStr = req.url;
+      //     const queryStart = urlStr.indexOf("?", 8);
+
+      //     if (queryStart === -1) {
+      //       parsedQuery = {};
+      //       return parsedQuery;
+      //     }
+
+      //     const queryString = urlStr.substring(queryStart + 1);
+      //     parsedQuery = Object.fromEntries(new URLSearchParams(queryString));
+
+      //     return parsedQuery;
+      //   },
+      //   params: (req.params || {}) as BunifyRequest<T, Decorators>["params"],
+      //   json: () => req.json(),
+      //   text: () => req.text(),
+      //   headers: req.headers,
+      //   method: req.method,
+      //   url: req.url,
+      //   ...(this.decorators as Decorators),
+      // };
+
+      const request = new BunifyRequest<T, Decorators>(req, this.decorators);
 
       const reply = createReply() as BunifyReply<T>;
 
@@ -207,23 +266,15 @@ export class Bunify<Decorators extends Record<string, any> = {}> {
       request: BunifyRequest<T, Decorators>,
       reply: BunifyReply<T>,
     ) => {
-      let index = -1;
-      const next = async (i: number): Promise<any> => {
-        if (i <= index) {
-          throw new Error("next() called multiple times");
+      for (let i = 0; i < middlewares.length; i++) {
+        const fn = middlewares[i];
+        if (fn) {
+          await fn(request, reply, async () => {});
+          if (reply.sent) return;
         }
-        index = i;
-
-        if (i === middlewares.length) {
-          return handler(request, reply);
-        }
-
-        const mw = middlewares[i];
-        if (mw) {
-          return mw(request, reply, () => next(i + 1));
-        }
-      };
-      return next(0);
+      }
+      const res = await handler(request, reply);
+      if (res !== undefined && !reply.sent) return reply.send(res);
     };
   }
 
@@ -236,25 +287,18 @@ export class Bunify<Decorators extends Record<string, any> = {}> {
     return { handler, middlewares };
   }
 
-  private runHooks<T extends RouteSchema>(
+  private async runHooks<T extends RouteSchema>(
     hooks: Middleware<T, Decorators>[],
     request: BunifyRequest<T, Decorators>,
     reply: BunifyReply<T>,
   ) {
-    let index = -1;
-
-    const next = async (i: number): Promise<any> => {
-      if (i <= index) {
-        throw new Error("next() called multiple times in hooks");
-      }
-      index = i;
-
+    for (let i = 0; i < hooks.length; i++) {
       const fn = hooks[i];
-      if (!fn) return;
-
-      return fn(request, reply, () => next(i + 1));
-    };
-    return next(0);
+      if (fn) {
+        await fn(request, reply, async () => {});
+        if (reply.sent) return;
+      }
+    }
   }
 
   private async runPipeline<T extends RouteSchema>(
@@ -262,29 +306,34 @@ export class Bunify<Decorators extends Record<string, any> = {}> {
     reply: BunifyReply<T>,
     handler: Handler<T, Decorators>,
   ) {
-    let res = await this.runHooks(
-      this.hooks.onRequest as Middleware<T, Decorators>[],
-      request,
-      reply,
-    );
-    if (reply.sent) return;
+    if (this.hooks.onRequest.length > 0) {
+      await this.runHooks(
+        this.hooks.onRequest as Middleware<T, Decorators>[],
+        request,
+        reply,
+      );
+      if (reply.sent) return;
+    }
 
-    res = await this.runHooks(
-      this.hooks.preHandler as Middleware<T, Decorators>[],
-      request,
-      reply,
-    );
-    if (reply.sent) return;
+    if (this.hooks.preHandler.length > 0) {
+      await this.runHooks(
+        this.hooks.preHandler as Middleware<T, Decorators>[],
+        request,
+        reply,
+      );
+      if (reply.sent) return;
+    }
 
-    res = await handler(request, reply);
-    if (reply.sent) return res;
+    const res = await handler(request, reply);
+    if (res !== undefined && !reply.sent) return reply.send(res);
 
-    await this.runHooks(
-      this.hooks.onResponse as Middleware<T, Decorators>[],
-      request,
-      reply,
-    );
-
+    if (this.hooks.onResponse.length > 0) {
+      await this.runHooks(
+        this.hooks.onResponse as Middleware<T, Decorators>[],
+        request,
+        reply,
+      );
+    }
     return res;
   }
 
