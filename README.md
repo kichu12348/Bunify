@@ -9,7 +9,7 @@ A fast, lightweight, and strictly-typed web framework built specifically for [Bu
 Since Bunify relies on native Bun features, ensure you have [Bun installed](https://bun.sh/).
 
 ```bash
-bun add bunify
+bun add @kichu12348/bunify
 ```
 
 ## Quick Start

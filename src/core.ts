@@ -360,9 +360,13 @@ export class Bunify<Decorators extends Record<string, any> = {}> {
     this.addRoute("PATCH", path, handlers);
   }
 
-  listen(port: number, callback?: (address: string) => void) {
+  listen(
+    { port, host = "" }: { port: number; host?: string },
+    callback?: (address: string) => void,
+  ) {
     const server = Bun.serve({
       port: port,
+      hostname: host,
       routes: this.routes,
       fetch: async () => {
         return new Response("Not Found", { status: 404 });
