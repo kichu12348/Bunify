@@ -15,7 +15,7 @@ bun add bunify
 ## Quick Start
 
 ```typescript
-import { Bunify } from "bunify";
+import { Bunify } from "@kichu12348/bunify";
 
 const app = new Bunify({ logger: true });
 
@@ -130,7 +130,3 @@ The `reply` object gives you fine-grained control to shape responses gracefully.
 - `reply.redirect(url)`: Responds with a 302 redirect
 - `reply.send(content)`: Generic send handler
 - Return directly from `handler` instead of returning `reply.send()` (See Quick Start).
-
-## License
-
-[MIT](./LICENSE)
